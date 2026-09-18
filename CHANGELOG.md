@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Generated pack content (manifest, resource map, retrieval protocol, overview, repo context/project/runbook notes) now uses workspace-relative or `~`-abbreviated display paths instead of absolute machine paths, keeping usernames and home-directory layout out of committed packs. Functional paths (filesystem operations, `workspace-map.json`) are unchanged.
+- Fix pi exiting with an `uncaughtException` when a widget auto-clear timer (`memctx-tool-failure`, `memctx-learned`, `memctx-learn`) fired after the session was replaced (new session, fork, switch session, or reload): pending widget clears are now tracked and cancelled in `session_shutdown`, and the timer callbacks are stale-ctx-safe.
+- Fix the `/memctx-init` and `/memctx-refresh` print-mode (`pi -p`) crash: all UI touches in these commands now go through a headless-safe facade (`safeUi`), and a `confirm` in headless mode resolves `false`, linking an existing pack non-destructively instead of crashing.
+- Stop `memctx_save` from appending unrelated saves into the newest same-type note: a note is only a merge target when its title shares >= 2 meaningful tokens with the new note's title (>= 1 for short titles), and date-prefixed action-note filenames are recognized as exact duplicates.
 
 
 ## [0.13.1] - 2026-05-09
