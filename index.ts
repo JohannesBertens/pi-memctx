@@ -22,6 +22,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -4260,7 +4261,7 @@ async function enrichGeneratedPackWithLlm(scanDir: string, packSlug: string, pac
 		await yieldToUi();
 		const selected = await selectImportantFilesWithLlm(repo, inventory, ctx, forceLlm);
 		const contextRel = `20-context/${repo.slug}.md`;
-		writeGeneratedFile(packPath, contextRel, repoContextNote(packSlug, repo, today, inventory, selected), filesCreated);
+		writeGeneratedFile(packPath, contextRel, repoContextNote(packSlug, repo, today, inventory, selected, scanDir), filesCreated);
 		contextRows.push(`| [[packs/${packSlug}/20-context/${repo.slug}|${repo.name}]] | ${repo.type}; ${repo.description || "repository context"}. |`);
 		if (ctx.hasUI) ctx.ui.notify(`memctx enrich: repo ${repo.name}: wrote deterministic context (${inventory.length} files indexed).`, "info");
 		const resolvedLlmModel = resolveLlmModel(ctx);
@@ -4320,7 +4321,24 @@ function repoInventorySummary(inventory: RepoFileInventoryItem[], selected: stri
 	].join("\n");
 }
 
-function repoContextNote(packSlug: string, repo: RepoEvidence, today: string, inventory: RepoFileInventoryItem[] = [], selected: string[] = []): string {
+export function displayPathFor(base: string, p: string): string {
+	// Display-safe path for generated pack content: workspace-relative when inside
+	// `base`, `~`-abbreviated under the user home, absolute only when unavoidable.
+	// Keeps machine-local layout (usernames, home dirs) out of committed packs.
+	try {
+		const rel = path.relative(base, p);
+		if (rel === "") return ".";
+		if (!rel.startsWith("..") && !path.isAbsolute(rel)) return rel;
+		const home = os.homedir();
+		if (home && (p === home || p.startsWith(home + path.sep))) return "~" + p.slice(home.length);
+	} catch {
+		// fall through to the raw path
+	}
+	return p;
+}
+
+function repoContextNote(packSlug: string, repo: RepoEvidence, today: string, inventory: RepoFileInventoryItem[] = [], selected: string[] = [], scanDir = ""): string {
+	const repoLocalPath = displayPathFor(scanDir || repo.path, repo.path);
 	const docs = repo.docs
 		.slice(0, 8)
 		.map((d) => `### ${d.path}\n\n${d.content}`)
@@ -4350,7 +4368,7 @@ tags:
 **Type:** ${repo.type}  
 **Status:** ${repo.status}  
 **Description:** ${repo.description}  
-**Local path:** \`${repo.path}\`  
+**Local path:** \`${repoLocalPath}\`  
 **Remote:** \`${repo.remote}\`  
 **Current branch:** \`${repo.currentBranch}\`
 
@@ -4397,7 +4415,8 @@ ${docs || "No documentation excerpts observed."}
 `;
 }
 
-function repoProjectNote(packSlug: string, repo: RepoEvidence, today: string): string {
+function repoProjectNote(packSlug: string, repo: RepoEvidence, today: string, scanDir = ""): string {
+	const repoLocalPath = displayPathFor(scanDir || repo.path, repo.path);
 	return `---
 type: project
 id: project.${packSlug}.${repo.slug}
@@ -4418,7 +4437,7 @@ tags:
 
 | Field | Value |
 |---|---|
-| Local path | \`${repo.path}\` |
+| Local path | \`${repoLocalPath}\` |
 | Remote | \`${repo.remote}\` |
 | Type | ${repo.type} |
 | Status | ${repo.status} |
@@ -4439,7 +4458,8 @@ ${repo.readFirst.length ? repo.readFirst.map((f) => `- \`${f}\``).join("\n") : "
 `;
 }
 
-function repoRunbookNote(packSlug: string, repo: RepoEvidence, today: string): string {
+function repoRunbookNote(packSlug: string, repo: RepoEvidence, today: string, scanDir = ""): string {
+	const repoLocalPath = displayPathFor(scanDir || repo.path, repo.path);
 	return `---
 type: runbook
 id: runbook.${packSlug}.${repo.slug}.development
@@ -4456,7 +4476,7 @@ tags:
 
 # ${repo.name} Development Runbook
 
-Use source-of-truth files in \`${repo.path}\` before changing behavior. The commands below were inferred from manifests and safe script names only.
+Use source-of-truth files in \`${repoLocalPath}\` before changing behavior. The commands below were inferred from manifests and safe script names only.
 
 ## Setup and checks
 
@@ -4484,6 +4504,7 @@ export function generatePackFromDirectory(scanDir: string, packSlug: string, pac
 	const filesCreated: string[] = [];
 	const today = todayStr();
 	const title = packSlug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+	const scanDisplay = displayPathFor(scanDir, scanDir);
 
 	for (const dir of [
 		"00-system/pi-agent",
@@ -4525,7 +4546,7 @@ tags:
 
 # ${title} Memory Manifest
 
-This pack stores safe durable context generated from \`${scanDir}\`.
+This pack stores safe durable context generated from \`${scanDisplay}\`.
 
 ## Pack root
 
@@ -4574,7 +4595,7 @@ tags:
 
 # Retrieval Protocol
 
-Before working with repositories from \`${scanDir}\`:
+Before working with repositories from \`${scanDisplay}\`:
 
 1. Read [[packs/${packSlug}/00-system/pi-agent/resource-map|Resource Map]].
 2. Read the repository-specific context note in \`20-context/\`.
@@ -4585,7 +4606,7 @@ Before working with repositories from \`${scanDir}\`:
 		filesCreated,
 	);
 
-	const repoRows = repos.map((r) => `| \`${r.name}\` | ${r.type} | ${r.status} | \`${r.path}\` | \`${r.remote}\` | ${r.readFirst.map((f) => `\`${f}\``).join(", ") || "inspect source"} |`).join("\n");
+	const repoRows = repos.map((r) => `| \`${r.name}\` | ${r.type} | ${r.status} | \`${displayPathFor(scanDir, r.path)}\` | \`${r.remote}\` | ${r.readFirst.map((f) => `\`${f}\``).join(", ") || "inspect source"} |`).join("\n");
 	writeGeneratedFile(
 		packPath,
 		"00-system/pi-agent/resource-map.md",
@@ -4606,7 +4627,7 @@ tags:
 
 ## Source directory
 
-\`${scanDir}\`
+\`${scanDisplay}\`
 
 ## Repositories
 
@@ -4641,7 +4662,7 @@ tags:
 
 # ${title} Overview
 
-Generated from \`${scanDir}\`.
+Generated from \`${scanDisplay}\`.
 
 ## Repositories
 
@@ -4654,17 +4675,17 @@ ${repos.map((r) => `- [[packs/${packSlug}/20-context/${r.slug}|${r.name}]] — $
 `,
 		filesCreated,
 	);
-	contextEntries.push(`| [[packs/${packSlug}/20-context/overview|${title} Overview]] | Workspace overview generated from ${scanDir}. |`);
+	contextEntries.push(`| [[packs/${packSlug}/20-context/overview|${title} Overview]] | Workspace overview generated from ${scanDisplay}. |`);
 
 	for (const repo of repos) {
 		const inventory = collectRepoFileInventory(repo.path);
 		const selected = inventory.slice(0, 24).map((item) => item.path);
-		writeGeneratedFile(packPath, `20-context/${repo.slug}.md`, repoContextNote(packSlug, repo, today, inventory, selected), filesCreated);
-		writeGeneratedFile(packPath, `30-projects/${repo.slug}.md`, repoProjectNote(packSlug, repo, today), filesCreated);
+		writeGeneratedFile(packPath, `20-context/${repo.slug}.md`, repoContextNote(packSlug, repo, today, inventory, selected, scanDir), filesCreated);
+		writeGeneratedFile(packPath, `30-projects/${repo.slug}.md`, repoProjectNote(packSlug, repo, today, scanDir), filesCreated);
 		contextEntries.push(`| [[packs/${packSlug}/20-context/${repo.slug}|${repo.name}]] | ${repo.type} — ${repo.description.slice(0, 80)} |`);
 		projectEntries.push(`| [[packs/${packSlug}/30-projects/${repo.slug}|${repo.name}]] | ${repo.status} ${repo.type} repository. |`);
 		if (repo.safeCommands.length > 0) {
-			writeGeneratedFile(packPath, `70-runbooks/${repo.slug}-development.md`, repoRunbookNote(packSlug, repo, today).replace("\n-title:", "\ntitle:"), filesCreated);
+			writeGeneratedFile(packPath, `70-runbooks/${repo.slug}-development.md`, repoRunbookNote(packSlug, repo, today, scanDir).replace("\n-title:", "\ntitle:"), filesCreated);
 			runbookEntries.push(`| [[packs/${packSlug}/70-runbooks/${repo.slug}-development|${repo.name} Development Runbook]] | Safe generated setup/check commands. |`);
 		}
 	}

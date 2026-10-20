@@ -23,6 +23,7 @@ import {
 	buildPromptRequirements,
 	buildSessionHandoff,
 	detectActivePack,
+	displayPathFor,
 	evaluateGatewayCoverage,
 	findVaultRoot,
 	generatePackFromDirectory,
@@ -1911,6 +1912,16 @@ describe("llmArchitectureNote model attribution", () => {
 // ==========================================================================
 // 20. memctx_save model attribution in frontmatter
 // ==========================================================================
+
+describe("displayPathFor", () => {
+	test("emits workspace-relative, ~-abbreviated, or raw paths for pack content", () => {
+		const home = os.homedir();
+		expect(displayPathFor("/ws", "/ws/src/index.ts")).toBe("src/index.ts");
+		expect(displayPathFor("/ws", "/ws")).toBe(".");
+		expect(displayPathFor("/ws", `${home}/notes/x.md`)).toBe("~/notes/x.md");
+		expect(displayPathFor("/ws", "/etc/hosts")).toBe("/etc/hosts");
+	});
+});
 
 describe("memctx_save model attribution", () => {
 	beforeEach(() => {

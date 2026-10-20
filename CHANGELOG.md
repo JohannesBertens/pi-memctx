@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Generated pack content (manifest, resource map, retrieval protocol, overview, repo context/project/runbook notes) now uses workspace-relative or `~`-abbreviated display paths instead of absolute machine paths, keeping usernames and home-directory layout out of committed packs. Functional paths (filesystem operations, `workspace-map.json`) are unchanged.
+
 
 ## [0.13.1] - 2026-05-09
 
