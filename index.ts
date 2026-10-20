@@ -3264,13 +3264,24 @@ function findSimilarNote(candidate: MemoryCandidate): string | null {
 		.filter((term) => term.length > 3 && !stop.has(term))
 		.slice(0, 8);
 	if (terms.length === 0) return null;
+	// title-overlap gate: bag-of-words content matches alone merged unrelated
+	// saves into the newest same-type note whenever >= 3 generic title terms
+	// (e.g. memory, vault, pushed) appeared anywhere in it. Require the note's
+	// title to share >= 2 meaningful tokens with the candidate title (>= 1 when
+	// a title has at most 2 tokens) before content scoring can merge.
+	const candidateTitleTokens = new Set(slugify(candidate.title).split("-").filter((t) => t.length > 3 && !stop.has(t)));
 	const dirs = NOTE_TYPE_DIRS[candidate.type].map((dir) => path.join(activePackPath, dir)).filter((dir) => fs.existsSync(dir));
 	for (const dir of dirs) {
 		for (const file of scanPackFiles(dir).slice(0, 40)) {
 			const content = readFileSafe(file)?.toLowerCase() ?? "";
 			const basename = slugify(path.basename(file, ".md"));
 			const titleSlug = slugify(candidate.title);
-			if (basename === titleSlug) return file;
+			if (basename === titleSlug || basename.replace(/^\d{4}-\d{2}-\d{2}-/, "") === titleSlug) return file; // exact duplicate detection, incl. action notes' date-prefixed names
+			const existingTitle = content.match(/^title:[ \t]*(.+?)[ \t]*$/m)?.[1] ?? path.basename(file, ".md");
+			const existingTokens = slugify(existingTitle).split("-").filter((t) => t.length > 3 && !stop.has(t));
+			const overlap = existingTokens.filter((t) => candidateTitleTokens.has(t)).length;
+			const minTokens = Math.min(candidateTitleTokens.size, existingTokens.length);
+			if (!(overlap >= 2 || (overlap >= 1 && minTokens <= 2))) continue;
 			const score = terms.filter((term) => content.includes(term)).length;
 			const threshold = candidate.type === "context" ? Math.max(2, terms.length) : Math.min(3, terms.length);
 			if (score >= threshold) return file;
