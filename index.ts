@@ -4321,6 +4321,39 @@ function repoInventorySummary(inventory: RepoFileInventoryItem[], selected: stri
 	].join("\n");
 }
 
+function safeUi(ctx: ExtensionCommandContext) {
+	// Headless-safe ui facade: print (-p) / JSON mode has hasUI === false, and a
+	// captured ctx goes stale after session replacement - guard every touch so
+	// deferred/background work never crashes on a dead session (see #114).
+	const uiActive = ctx.hasUI;
+	return {
+		notify: (message: string, level: "info" | "error" | "warning") => {
+			if (!uiActive) return;
+			try {
+				ctx.ui.notify(message, level);
+			} catch {
+				/* ctx stale after session replacement */
+			}
+		},
+		setStatus: (text: string) => {
+			if (!uiActive) return;
+			try {
+				ctx.ui.setStatus("memctx", text);
+			} catch {
+				/* ctx stale after session replacement */
+			}
+		},
+		confirm: async (title: string, body: string): Promise<boolean> => {
+			if (!uiActive) return false;
+			try {
+				return await ctx.ui.confirm(title, body);
+			} catch {
+				return false;
+			}
+		},
+	};
+}
+
 export function displayPathFor(base: string, p: string): string {
 	// Display-safe path for generated pack content: workspace-relative when inside
 	// `base`, `~`-abbreviated under the user home, absolute only when unavoidable.
@@ -5145,16 +5178,17 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function refreshWorkspaceMemory(scanDir: string, ctx: ExtensionCommandContext, noDeep = false): Promise<void> {
+		const ui = safeUi(ctx);
 		if (!activePackPath || !activePack) {
-			ctx.ui.notify("memctx: No workspace memory found. Run /memctx-init first.", "error");
+			ui.notify("memctx: No workspace memory found. Run /memctx-init first.", "error");
 			return;
 		}
 		if (packEnrichRunning) {
-			ctx.ui.notify("memctx: Memory refresh is already running in the background.", "warning");
+			ui.notify("memctx: Memory refresh is already running in the background.", "warning");
 			return;
 		}
 		if (!fs.existsSync(scanDir)) {
-			ctx.ui.notify(`memctx: Workspace path not found: ${scanDir}`, "error");
+			ui.notify(`memctx: Workspace path not found: ${scanDir}`, "error");
 			return;
 		}
 		const pack = activePack;
@@ -5163,15 +5197,15 @@ export default function (pi: ExtensionAPI) {
 		const useLlm = !noDeep && !!resolveLlmModel(ctx);
 		const started = Date.now();
 		packEnrichRunning = true;
-		ctx.ui.notify(`memctx: Refreshing workspace memory in background.\nWorkspace: ${scanDir}\nMemory: ${pack}\nDeep LLM: ${useLlm ? "on" : "off"}`, "info");
-		ctx.ui.setStatus("memctx", `🧠 ${pack} · refreshing memory`);
+		ui.notify(`memctx: Refreshing workspace memory in background.\nWorkspace: ${scanDir}\nMemory: ${pack}\nDeep LLM: ${useLlm ? "on" : "off"}`, "info");
+		ui.setStatus(`🧠 ${pack} · refreshing memory`);
 		setTimeout(
 			() =>
 				void (async () => {
 					try {
 						const files = await enrichGeneratedPackWithLlm(scanDir, pack, packPath, ctx, useLlm);
 						if (qmdAvailable && collection) qmdEmbed(collection, packPath).catch(() => {});
-						ctx.ui.notify(
+						ui.notify(
 							`memctx: Workspace memory refresh complete in ${Date.now() - started}ms\nupdated files: ${files.length}${
 								files.length
 									? `\n${files
@@ -5183,10 +5217,10 @@ export default function (pi: ExtensionAPI) {
 							"info",
 						);
 					} catch (err) {
-						ctx.ui.notify(`memctx: Workspace memory refresh failed after ${Date.now() - started}ms: ${err instanceof Error ? err.message : String(err)}`, "error");
+						ui.notify(`memctx: Workspace memory refresh failed after ${Date.now() - started}ms: ${err instanceof Error ? err.message : String(err)}`, "error");
 					} finally {
 						packEnrichRunning = false;
-						ctx.ui.setStatus("memctx", buildStatusText());
+						ui.setStatus(buildStatusText());
 					}
 				})(),
 			0,
@@ -5194,6 +5228,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function initializeWorkspaceMemory(args: string, ctx: ExtensionCommandContext): Promise<void> {
+		const ui = safeUi(ctx);
 		const packsDir = _packsDir || resolvePacksDir(ctx.cwd) || DEFAULT_GLOBAL_PACKS_DIR;
 		fs.mkdirSync(packsDir, { recursive: true });
 
@@ -5204,7 +5239,7 @@ export default function (pi: ExtensionAPI) {
 		let slug = parts[1] || "";
 		if (!path.isAbsolute(scanDir)) scanDir = path.resolve(ctx.cwd, scanDir);
 		if (!fs.existsSync(scanDir)) {
-			ctx.ui.notify(`memctx: Workspace path not found: ${scanDir}`, "error");
+			ui.notify(`memctx: Workspace path not found: ${scanDir}`, "error");
 			return;
 		}
 		if (!slug)
@@ -5217,7 +5252,7 @@ export default function (pi: ExtensionAPI) {
 
 		const targetPackPath = path.join(packsDir, slug);
 		if (fs.existsSync(targetPackPath)) {
-			const overwrite = await ctx.ui.confirm("Workspace memory exists", `Memory "${slug}" already exists. Refresh/rebuild it from ${scanDir}?`);
+			const overwrite = await ui.confirm("Workspace memory exists", `Memory "${slug}" already exists. Refresh/rebuild it from ${scanDir}?`); // headless: resolves false -> link existing (non-destructive)
 			if (!overwrite) {
 				_packsDir = packsDir;
 				vaultRoot = path.dirname(packsDir);
@@ -5226,14 +5261,14 @@ export default function (pi: ExtensionAPI) {
 				qmdCollection = qmdCollectionName(slug, activePackPath || path.join(packsDir, slug));
 				rememberWorkspaceMemory(packsDir, scanDir, slug);
 				if (qmdAvailable) qmdEmbed(qmdCollection, activePackPath).catch(() => {});
-				ctx.ui.notify(`memctx: Linked workspace to existing memory "${slug}".`, "info");
-				ctx.ui.setStatus("memctx", buildStatusText());
+				ui.notify(`memctx: Linked workspace to existing memory "${slug}".`, "info");
+				ui.setStatus(buildStatusText());
 				return;
 			}
 			fs.rmSync(targetPackPath, { recursive: true });
 		}
 
-		ctx.ui.notify(`memctx: Initializing workspace memory for ${scanDir}...`, "info");
+		ui.notify(`memctx: Initializing workspace memory for ${scanDir}...`, "info");
 		const { packPath, filesCreated } = generatePackFromDirectory(scanDir, slug, packsDir);
 		_packsDir = packsDir;
 		vaultRoot = path.dirname(packsDir);
@@ -5243,11 +5278,11 @@ export default function (pi: ExtensionAPI) {
 		lastPackSwitch = { from: "", to: slug, reason: "initialized workspace memory", confidence: "high", timestamp: nowTimestamp() };
 		rememberWorkspaceMemory(packsDir, scanDir, slug);
 
-		ctx.ui.notify(
+		ui.notify(
 			`memctx: Workspace memory "${slug}" initialized.\nWorkspace: ${scanDir}\nFiles created: ${filesCreated.length}\nLearning: ${autosaveMode}\nSearch: ${qmdAvailable ? "qmd" : "grep fallback"}`,
 			"info",
 		);
-		ctx.ui.setStatus("memctx", buildStatusText());
+		ui.setStatus(buildStatusText());
 		await refreshWorkspaceMemory(scanDir, ctx, noDeep);
 	}
 
